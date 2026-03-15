@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shared-observability"
+version = "1.0.0"
+description = "Shared OTel instrumentation SDK for the agent observability PoC"
+requires-python = ">=3.11"
+dependencies = [
+    # ── OTel core ──────────────────────────────────────────────────────────────
+    "opentelemetry-api>=1.22.0",
+    "opentelemetry-sdk>=1.22.0",
+
+    # ── OTLP gRPC exporter (traces + metrics + logs → OTel Collector) ─────────
+    "opentelemetry-exporter-otlp-proto-grpc>=1.22.0",
+
+    # ── Auto-instrumentation (wires FastAPI spans + outbound HTTP spans) ───────
+    "opentelemetry-instrumentation-fastapi>=0.43b0",
+    "opentelemetry-instrumentation-httpx>=0.43b0",     # DuckDuckGo search uses httpx
+
+    # ── Semantic conventions (standard attribute key names) ───────────────────
+    "opentelemetry-semantic-conventions>=0.43b0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shared_observability*"]
