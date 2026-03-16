@@ -134,7 +134,13 @@ def setup_otel(
     otel_handler = LoggingHandler(
         level=logging.DEBUG, logger_provider=logger_provider
     )
-    logging.getLogger().addHandler(otel_handler)
+    root_logger = logging.getLogger()
+    # Root logger defaults to WARNING — raise it to INFO so that
+    # _log.info() calls from agent code actually reach the OTel handler.
+    # Without this, INFO logs are dropped before the handler ever sees them.
+    if root_logger.level == logging.WARNING or root_logger.level == 0:
+        root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(otel_handler)
 
     # ── Propagators ────────────────────────────────────────────────────────────
     # W3C TraceContext: propagates trace_id/span_id in the `traceparent` header.
