@@ -216,7 +216,9 @@ class LLMJudgeRunner(BaseRunner):
         self._metrics = [
             m.name for m in BY_RUNNER.get(f"llm_{model_tier}", [])
         ]
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        # Let the genai SDK discover the key itself (reads GOOGLE_API_KEY from
+        # os.environ).  Never pass an empty string — the SDK rejects it.
+        api_key = os.environ.get("GOOGLE_API_KEY") or None
         self._client = genai.Client(api_key=api_key)
 
     async def run(self, job: EvalJob) -> list[EvalResult]:
