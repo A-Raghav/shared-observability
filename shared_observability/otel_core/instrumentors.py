@@ -48,9 +48,11 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
+from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
+from opentelemetry.context import Context
 from opentelemetry.trace import Span, Status, StatusCode
 
 _log = logging.getLogger(__name__)
@@ -289,6 +291,91 @@ async def tool_call_span(
 
 
 # ── Standalone metric helpers ─────────────────────────────────────────────────
+
+# ── Retroactive span helper (for event-stream frameworks) ────────────────────
+
+def create_retroactive_child_span(
+    name: str,
+    parent_ctx: Context,
+    start_time_ns: int,
+    end_time_ns: int,
+    attributes: Optional[dict] = None,
+    ok: bool = True,
+) -> None:
+    """
+    Create a span whose start/end times are set retroactively.
+
+    Both LangGraph and ADK emit events *after* each operation completes, so we
+    cannot wrap each operation with a context manager in the normal way.  Instead
+    we record the wall-clock time at the start of each event-loop iteration
+    (= when the previous operation started) and at the end (= when it finished),
+    then create the span with those timestamps.
+
+    This gives Tempo accurate per-operation durations in the waterfall view even
+    though the span object is created and closed in the same Python frame.
+
+    Args:
+        name:         Span name, e.g. "llm_call" or "tool_call:web_search".
+        parent_ctx:   OTel Context captured inside the agent_run_span context
+                      (via `otel_context.get_current()`).  Establishes the
+                      parent-child relationship in the trace.
+        start_time_ns: Operation start time in nanoseconds since epoch
+                       (`time.time_ns()` at the start of the event-loop iteration).
+        end_time_ns:   Operation end time in nanoseconds since epoch
+                       (`time.time_ns()` when the event was received).
+        attributes:    Key-value span attributes (strings, ints, bools).
+        ok:            True → StatusCode.OK, False → StatusCode.ERROR.
+    """
+    span = _tracer().start_span(name, context=parent_ctx, start_time=start_time_ns)
+    for k, v in (attributes or {}).items():
+        span.set_attribute(k, v)
+    span.set_status(Status(StatusCode.OK if ok else StatusCode.ERROR))
+    span.end(end_time=end_time_ns)
+
+
+# ── Standalone metric recorders (companion to create_retroactive_child_span) ──
+
+def record_llm_call(
+    duration_ms: float,
+    framework: str,
+    model: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    """
+    Record metrics for one completed LLM inference call.
+
+    Called alongside create_retroactive_child_span() for LLM spans so that
+    metric instruments carry the actual measured duration (not the near-zero
+    span creation time).
+    """
+    attrs = {"agent.framework": framework, "llm.model": model}
+    _llm_call_duration().record(duration_ms, attrs)
+    if input_tokens > 0:
+        _llm_tokens_input().add(input_tokens, attrs)
+    if output_tokens > 0:
+        _llm_tokens_output().add(output_tokens, attrs)
+
+
+def record_tool_call(
+    duration_ms: float,
+    framework: str,
+    tool_name: str,
+    success: bool = True,
+) -> None:
+    """
+    Record metrics for one completed tool execution.
+
+    Called alongside create_retroactive_child_span() for tool spans.
+    """
+    attrs = {
+        "agent.framework": framework,
+        "tool.name": tool_name,
+        "tool.success": str(success).lower(),
+    }
+    _tool_call_duration().record(duration_ms, attrs)
+    _tool_call_count().add(1, attrs)
+
 
 def record_reasoning_turns(turn_count: int, framework: str, model: str) -> None:
     """
