@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from google import genai
@@ -216,10 +217,48 @@ class LLMJudgeRunner(BaseRunner):
         self._metrics = [
             m.name for m in BY_RUNNER.get(f"llm_{model_tier}", [])
         ]
-        # Let the genai SDK discover the key itself (reads GOOGLE_API_KEY from
-        # os.environ).  Never pass an empty string — the SDK rejects it.
-        api_key = os.environ.get("GOOGLE_API_KEY") or None
-        self._client = genai.Client(api_key=api_key)
+        self._client = self._build_client()
+
+    @staticmethod
+    def _build_client() -> genai.Client:
+        """
+        Build a genai.Client, finding GOOGLE_API_KEY by:
+          1. os.environ (set by the app's config module at startup)
+          2. Walk up from CWD looking for a .env file (belt-and-suspenders
+             for cases where the app is launched from an unexpected directory)
+          3. Raise a clear error if the key is still not found.
+        """
+        api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+
+        if not api_key:
+            # Try to load from a .env file found anywhere up the directory tree
+            search_dir = Path.cwd()
+            for _ in range(6):  # walk up at most 6 levels
+                dotenv_path = search_dir / ".env"
+                if dotenv_path.is_file():
+                    _log.debug("llm_judge loading .env from %s", dotenv_path)
+                    # Parse the file manually — avoids a hard dotenv dependency
+                    with dotenv_path.open() as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line.startswith("GOOGLE_API_KEY="):
+                                api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                os.environ["GOOGLE_API_KEY"] = api_key
+                                break
+                    if api_key:
+                        break
+                parent = search_dir.parent
+                if parent == search_dir:
+                    break
+                search_dir = parent
+
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY not found in os.environ or any .env file. "
+                "Set the key before starting the app."
+            )
+
+        return genai.Client(api_key=api_key)
 
     async def run(self, job: EvalJob) -> list[EvalResult]:
         results: list[EvalResult] = []
